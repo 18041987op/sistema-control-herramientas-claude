@@ -1,0 +1,20 @@
+{
+  "name": "inventario-herramientas",
+  "version": "1.0.0",
+  "description": "Sistema de control de inventario de herramientas para taller automotriz",
+  "main": "index.js",
+  "scripts": {
+    "server": "cd backend && SET NODE_OPTIONS=--openssl-legacy-provider && npm run dev",
+    "client": "cd frontend && SET NODE_OPTIONS=--openssl-legacy-provider && npm start",
+    "dev": "concurrently \"npm run server\" \"npm run client\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  },
+  "dependencies": {
+    "react-qr-code": "^2.0.15"
+  }
+}
