@@ -1,5 +1,7 @@
 // src/controllers/tools.controller.js
 const Tool = require('../models/Tool');
+// // Cuando se consulta la lista de herramientas
+// query = Tool.find(JSON.parse(queryStr));
 
 // @desc    Obtener todas las herramientas
 // @route   GET /api/tools
@@ -69,13 +71,47 @@ exports.getTools = async (req, res) => {
         limit
       };
     }
-    
-    res.status(200).json({
+
+    // Obtener información sobre quién tiene prestada cada herramienta
+    const Loan = require('../models/Loan');
+
+    const toolsWithLoanInfo = await Promise.all(tools.map(async (tool) => {
+      if (tool.status === 'borrowed') {
+        const activeLoan = await Loan.findOne({ 
+          tool: tool._id, 
+          status: 'active' 
+        }).populate({
+          path: 'technician',
+          select: 'name email'
+        });
+        
+        // Convertir a objeto para poder añadir propiedades
+        const toolObj = tool.toObject();
+        if (activeLoan) {
+          toolObj.currentLoan = {
+            id: activeLoan._id,
+            technician: activeLoan.technician
+          };
+        }
+        return toolObj;
+      }
+      return tool;
+    }));
+
+    // Reemplazar tools por toolsWithLoanInfo en la respuesta
+    return res.status(200).json({
       success: true,
-      count: tools.length,
+      count: toolsWithLoanInfo.length,
       pagination,
-      data: tools
+      data: toolsWithLoanInfo
     });
+    
+    // res.status(200).json({
+    //   success: true,
+    //   count: tools.length,
+    //   pagination,
+    //   data: tools
+    // });
   } catch (error) {
     res.status(500).json({
       success: false,

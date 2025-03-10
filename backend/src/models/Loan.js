@@ -42,7 +42,7 @@ const LoanSchema = new mongoose.Schema({
     status: {
       type: String,
       enum: ['good', 'damaged', 'incomplete', null],
-      default: null  // Null hasta que se devuelva o undefined  // undefined sí es permitido
+      default: null  // Null hasta que se devuelva
     },
     hasDamage: {
       type: Boolean,
@@ -68,6 +68,10 @@ const LoanSchema = new mongoose.Schema({
     transferredAt: {
       type: Date,
       default: Date.now
+    },
+    initiatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
     },
     notes: {
       type: String,

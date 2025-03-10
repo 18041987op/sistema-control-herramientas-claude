@@ -175,87 +175,6 @@ exports.createLoan = async (req, res) => {
   }
 };
 
-
-// exports.createLoan = async (req, res) => {
-//   try {
-//     // Verificar si se proporcionó el ID de la herramienta
-//     if (!req.body.tool) {
-//       return res.status(400).json({
-//         success: false,
-//         message: 'Se requiere el ID de la herramienta'
-//       });
-//     }
-
-//     // Verificar si se proporcionó el propósito
-//     if (!req.body.purpose) {
-//       return res.status(400).json({
-//         success: false,
-//         message: 'Se requiere especificar el propósito del préstamo'
-//       });
-//     }
-
-//     // Verificar que la fecha esperada de devolución es válida
-//     if (!req.body.expectedReturn) {
-//       // Si no se proporciona, establecer a 3 días en el futuro por defecto
-//       const threeVaysFromNow = new Date();
-//       threeVaysFromNow.setDate(threeVaysFromNow.getDate() + 3);
-//       req.body.expectedReturn = threeVaysFromNow;
-//     }
-
-//     // Verificar si la herramienta existe
-//     const tool = await Tool.findById(req.body.tool);
-    
-//     if (!tool) {
-//       return res.status(404).json({
-//         success: false,
-//         message: 'Herramienta no encontrada'
-//       });
-//     }
-    
-//     // Verificar que la herramienta esté disponible
-//     if (tool.status !== 'available') {
-//       return res.status(400).json({
-//         success: false,
-//         message: `La herramienta no está disponible, estado actual: ${tool.status}`
-//       });
-//     }
-    
-//     // Agregar técnico al préstamo
-//     req.body.technician = req.user._id;
-    
-//     console.log('Datos del préstamo a crear:', req.body);
-
-//     // Crear el préstamo
-//     const loan = await Loan.create(req.body);
-    
-//     // Actualizar estado de la herramienta a 'borrowed'
-//     await Tool.findByIdAndUpdate(req.body.tool, { status: 'borrowed' });
-    
-//     // Cargar los detalles completos del préstamo para la respuesta
-//     const populatedLoan = await Loan.findById(loan._id)
-//       .populate({
-//         path: 'tool',
-//         select: 'name category serialNumber'
-//       })
-//       .populate({
-//         path: 'technician',
-//         select: 'name email'
-//       });
-    
-//     res.status(201).json({
-//       success: true,
-//       data: populatedLoan
-//     });
-//   } catch (error) {
-//     console.error('Error al crear préstamo:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Error al crear préstamo',
-//       error: error.message
-//     });
-//   }
-// };
-
 // @desc    Devolver una herramienta
 // @route   PUT /api/loans/:id/return
 // @access  Private
@@ -399,7 +318,9 @@ exports.updateLoan = async (req, res) => {
 // @access  Private
 exports.transferTool = async (req, res) => {
   try {
-    let loan = await Loan.findById(req.params.id);
+    // Encontrar el préstamo activo para esta herramienta
+    const loanId = req.params.id;
+    let loan = await Loan.findById(loanId);
     
     if (!loan) {
       return res.status(404).json({
@@ -416,9 +337,10 @@ exports.transferTool = async (req, res) => {
       });
     }
     
-    // Obtener el ID del técnico destino (ahora viene en el cuerpo de la solicitud)
+    // Obtener datos del cuerpo de la petición
     const { targetTechnician, purpose, vehicle, expectedReturn, notes } = req.body;
     
+    // Validaciones
     if (!targetTechnician) {
       return res.status(400).json({
         success: false,
@@ -441,37 +363,93 @@ exports.transferTool = async (req, res) => {
       });
     }
     
-    // Guardar referencia al técnico anterior
+    // Guardar el técnico anterior (que tenía la herramienta)
     const previousTechnician = loan.technician;
     
-    // Actualizar registro de transferencia
+    // 1. Actualizar estado del préstamo actual a 'transferred'
+    loan.status = 'transferred';
+    loan.actualReturn = Date.now();
     loan.transferHistory.push({
       fromTechnician: previousTechnician,
       toTechnician: targetTechnician,
       transferredAt: Date.now(),
+      initiatedBy: req.user._id,
       notes: notes || 'Transferencia entre técnicos'
     });
     
-    // Actualizar el técnico asignado
-    loan.technician = targetTechnician;
-    
-    // Actualizar propósito y vehículo si se proporcionan
-    if (purpose) loan.purpose = purpose;
-    if (vehicle) loan.vehicle = vehicle;
-    
-    // Actualizar fecha de devolución esperada si se proporciona
-    if (expectedReturn) {
-      loan.expectedReturn = expectedReturn;
-    } else {
-      // Si no se especifica, establecer por defecto a 3 días desde ahora
-      loan.expectedReturn = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
-    }
-    
-    // Guardar los cambios
     await loan.save();
     
-    // Obtener detalles completos para la respuesta
-    const updatedLoan = await Loan.findById(loan._id)
+    // 2. Crear un nuevo préstamo para el técnico destino
+    const newLoan = await Loan.create({
+      tool: loan.tool,
+      technician: targetTechnician,
+      borrowedAt: Date.now(),
+      expectedReturn: expectedReturn || new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+      purpose: purpose,
+      vehicle: vehicle || '',
+      status: 'active',
+      notes: `Transferido desde préstamo ${loan._id}. Solicitado por: ${req.user.name}`
+    });
+    
+    // Obtener información detallada para notificaciones y respuesta
+    const User = require('../models/User');
+    const previousUser = await User.findById(previousTechnician);
+    const targetUser = await User.findById(targetTechnician);
+    const requestingUser = await User.findById(req.user._id);
+    
+    // Obtener detalles de la herramienta
+    const toolDetails = await Tool.findById(loan.tool).select('name serialNumber');
+    
+    // Crear notificaciones
+    const notificationService = require('../utils/notification.util');
+    
+    // 1. Notificar al técnico que tenía la herramienta
+    if (previousTechnician.toString() !== req.user._id.toString()) {
+      await notificationService.createNotification(
+        previousTechnician,
+        'Herramienta transferida',
+        `Tu herramienta "${toolDetails.name}" ha sido transferida a ${targetUser.name}. Transferencia solicitada por ${requestingUser.name}.`,
+        {
+          type: 'info',
+          relatedTo: {
+            model: 'Loan',
+            id: newLoan._id
+          }
+        }
+      );
+    }
+    
+    // 2. Notificar al técnico que recibe la herramienta (si no es quien solicitó la transferencia)
+    if (targetTechnician.toString() !== req.user._id.toString()) {
+      await notificationService.createNotification(
+        targetTechnician,
+        'Herramienta asignada',
+        `Se te ha asignado la herramienta "${toolDetails.name}" que estaba en posesión de ${previousUser.name}. Transferencia solicitada por ${requestingUser.name}.`,
+        {
+          type: 'info',
+          relatedTo: {
+            model: 'Loan',
+            id: newLoan._id
+          }
+        }
+      );
+    }
+    
+    // 3. Notificar a administradores
+    await notificationService.notifyAllAdmins(
+      'Transferencia de herramienta',
+      `La herramienta "${toolDetails.name}" (${toolDetails.serialNumber}) ha sido transferida de ${previousUser.name} a ${targetUser.name}. Transferencia solicitada por ${requestingUser.name}.`,
+      {
+        type: 'info',
+        relatedTo: {
+          model: 'Loan',
+          id: newLoan._id
+        }
+      }
+    );
+    
+    // Obtener los detalles completos del nuevo préstamo para la respuesta
+    const populatedNewLoan = await Loan.findById(newLoan._id)
       .populate({
         path: 'tool',
         select: 'name category serialNumber'
@@ -479,53 +457,12 @@ exports.transferTool = async (req, res) => {
       .populate({
         path: 'technician',
         select: 'name email'
-      })
-      .populate({
-        path: 'transferHistory.fromTechnician',
-        select: 'name email'
-      })
-      .populate({
-        path: 'transferHistory.toTechnician',
-        select: 'name email'
       });
-    
-    // Buscar información del técnico destino para la notificación
-    const User = require('../models/User');
-    const targetUser = await User.findById(targetTechnician);
-    
-    // Crear notificación para el técnico anterior
-    const notificationService = require('../utils/notification.util');
-    await notificationService.createNotification(
-      previousTechnician,
-      'Herramienta transferida',
-      `La herramienta "${updatedLoan.tool.name}" ha sido transferida a ${targetUser.name}.`,
-      {
-        type: 'info',
-        relatedTo: {
-          model: 'Loan',
-          id: loan._id
-        }
-      }
-    );
-    
-    // Crear notificación para el técnico destino
-    await notificationService.createNotification(
-      targetTechnician,
-      'Herramienta recibida',
-      `Se te ha transferido la herramienta "${updatedLoan.tool.name}".`,
-      {
-        type: 'info',
-        relatedTo: {
-          model: 'Loan',
-          id: loan._id
-        }
-      }
-    );
     
     res.status(200).json({
       success: true,
       message: 'Herramienta transferida exitosamente',
-      data: updatedLoan
+      data: populatedNewLoan
     });
   } catch (error) {
     console.error('Error en transferTool:', error);
